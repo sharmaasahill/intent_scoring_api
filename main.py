@@ -16,6 +16,8 @@ from pydantic import BaseModel, Field
 import requests
 from dotenv import load_dotenv
 import logging
+import time
+import random
 
 # Load environment variables
 load_dotenv()
@@ -129,6 +131,21 @@ def calculate_data_completeness_score(lead: Lead) -> int:
     complete_fields = sum(1 for field in fields if field and field.strip())
     return min(10, complete_fields * 2)  # 2 points per field, max 10
 
+def _heuristic_ai_score(lead: Lead) -> tuple[int, str]:
+    """Heuristic fallback when AI is disabled or unavailable."""
+    role_lower = lead.role.lower()
+    industry_lower = lead.industry.lower()
+    high_intent_roles = ['ceo', 'cto', 'founder', 'head of', 'director', 'vp']
+    high_intent_industries = ['saas', 'technology', 'software', 'tech']
+    if any(role in role_lower for role in high_intent_roles) and any(ind in industry_lower for ind in high_intent_industries):
+        return 50, "Heuristic: decision-maker in tech industry"
+    if any(role in role_lower for role in high_intent_roles):
+        return 40, "Heuristic: decision-maker role"
+    if any(ind in industry_lower for ind in high_intent_industries):
+        return 35, "Heuristic: tech industry match"
+    return 20, "Heuristic: baseline"
+
+
 def get_ai_score(lead: Lead, offer: Offer) -> tuple[int, str]:
     """Get AI-based intent score and reasoning.
 
@@ -138,22 +155,11 @@ def get_ai_score(lead: Lead, offer: Offer) -> tuple[int, str]:
     """
     # Heuristic fallback if key not available
     if not GEMINI_API_KEY:
-        role_lower = lead.role.lower()
-        industry_lower = lead.industry.lower()
-        ai_score = 30
-        reasoning = "AI disabled: heuristic based on role/industry"
-        high_intent_roles = ['ceo', 'cto', 'founder', 'head of', 'director', 'vp']
-        high_intent_industries = ['saas', 'technology', 'software', 'tech']
-        if any(role in role_lower for role in high_intent_roles) and any(ind in industry_lower for ind in high_intent_industries):
-            return 50, "Heuristic: decision-maker in tech industry"
-        if any(role in role_lower for role in high_intent_roles):
-            return 40, "Heuristic: decision-maker role"
-        if any(ind in industry_lower for ind in high_intent_industries):
-            return 35, "Heuristic: tech industry match"
-        return 20, reasoning
+        score, reason = _heuristic_ai_score(lead)
+        return score, f"AI disabled: {reason}"
 
-    try:
-        prompt = f"""
+    # Build prompt once
+    prompt = f"""
         You are a B2B sales qualification expert. Analyze this lead against the product offer and classify their buying intent.
 
         PRODUCT/OFFER:
@@ -178,43 +184,63 @@ def get_ai_score(lead: Lead, offer: Offer) -> tuple[int, str]:
         Reasoning: <1–2 sentences>
         """
 
-        # REST call to Gemini
-        payload = {
-            "contents": [
-                {"parts": [{"text": prompt}]}
-            ]
-        }
-        params = {"key": GEMINI_API_KEY}
-        r = requests.post(GEMINI_URL, params=params, json=payload, timeout=30)
-        r.raise_for_status()
-        data = r.json()
+    # Prepare request payload
+    payload = {
+        "contents": [
+            {"parts": [{"text": prompt}]}
+        ]
+    }
+    params = {"key": GEMINI_API_KEY}
 
-        response_text = ""
+    # Retry with exponential backoff for transient errors
+    max_attempts = 3
+    base_delay_seconds = 1.0
+    for attempt in range(1, max_attempts + 1):
         try:
-            # Extract first candidate text
-            response_text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            r = requests.post(GEMINI_URL, params=params, json=payload, timeout=30)
+            status = r.status_code
+            if status >= 500 or status in (429,):
+                raise requests.HTTPError(f"Transient HTTP {status}", response=r)
+            r.raise_for_status()
+            data = r.json()
+
+            response_text = ""
+            try:
+                response_text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            except Exception:
+                response_text = str(data)
+
+            intent = "Medium"
+            reasoning = ""
+            for line in response_text.split('\n'):
+                if line.strip().lower().startswith("intent:"):
+                    intent = line.split(":", 1)[1].strip().capitalize()
+                elif line.strip().lower().startswith("reasoning:"):
+                    reasoning = line.split(":", 1)[1].strip()
+
+            intent_scores = {"High": 50, "Medium": 30, "Low": 10}
+            score = intent_scores.get(intent, 30)
+            if not reasoning:
+                reasoning = "AI provided no explanation"
+            return score, reasoning
+
+        except (requests.Timeout, requests.ConnectionError, requests.HTTPError) as e:
+            # Log sanitized error without URL or key
+            status_code = getattr(getattr(e, 'response', None), 'status_code', None)
+            logger.warning(f"AI call attempt {attempt}/{max_attempts} failed; status={status_code}")
+            if attempt < max_attempts:
+                # Exponential backoff with jitter
+                sleep_s = base_delay_seconds * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
+                time.sleep(sleep_s)
+                continue
+            # Last attempt failed -> graceful heuristic fallback without leaking details
+            score, reason = _heuristic_ai_score(lead)
+            return score, "AI temporarily unavailable; using heuristic fallback"
         except Exception:
-            # Fallback: stringify
-            response_text = str(data)
-
-        intent = "Medium"
-        reasoning = ""
-        for line in response_text.split('\n'):
-            if line.strip().lower().startswith("intent:"):
-                intent = line.split(":", 1)[1].strip().capitalize()
-            elif line.strip().lower().startswith("reasoning:"):
-                reasoning = line.split(":", 1)[1].strip()
-
-        intent_scores = {"High": 50, "Medium": 30, "Low": 10}
-        score = intent_scores.get(intent, 30)
-        if not reasoning:
-            reasoning = "AI provided no explanation"
-        return score, reasoning
-
-    except Exception as e:
-        logger.error(f"AI scoring error: {str(e)}")
-        # Gracefully fall back
-        return 25, f"AI scoring failed: {str(e)}"
+            # Non-retryable unexpected error -> heuristic
+            logger.exception("Unexpected AI scoring error")
+            score, reason = _heuristic_ai_score(lead)
+            return score, "AI error; using heuristic fallback"
 
 def score_lead(lead: Lead, offer: Offer) -> ScoredLead:
     """Score a single lead using rule-based and AI logic"""
