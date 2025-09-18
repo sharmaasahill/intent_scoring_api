@@ -39,10 +39,11 @@ GEMINI_API_KEY=your_actual_gemini_api_key_here
 ### 3. Run the Service
 
 ```bash
+export PORT=8000  # optional; many hosts set this automatically
 python main.py
 ```
 
-The service will start on `http://localhost:8000`
+The service will start on `http://localhost:${PORT:-8000}`
 
 ### 4. View API Documentation
 
@@ -175,28 +176,50 @@ The API includes comprehensive error handling for:
 1. Connect your GitHub repository to Render
 2. Create a new Web Service
 3. Set build command: `pip install -r requirements.txt`
-4. Set start command: `python main.py`
+4. Set start command: `python main.py` (or `uvicorn main:app --host 0.0.0.0 --port $PORT`)
 5. Add environment variable: `GEMINI_API_KEY=your_key`
 
 ### Using Railway
 
 1. Connect your GitHub repository to Railway
 2. Add environment variable: `GEMINI_API_KEY=your_key`
-3. Deploy automatically
+3. Set start command: `uvicorn main:app --host 0.0.0.0 --port $PORT`
+4. Deploy automatically
 
-### Using Docker
+### Using Docker (Any Host)
 
-```dockerfile
-FROM python:3.9-slim
+Build and run locally:
+```bash
+docker build -t intent-scoring-api .
+docker run -p 8000:8000 --env GEMINI_API_KEY=your_key intent-scoring-api
+```
 
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install -r requirements.txt
+### Live URL & Demo
 
-COPY . .
-EXPOSE 8000
+- Live API Base URL: `https://intent-scoring-api.onrender.com`
+- Swagger UI: `https://intent-scoring-api.onrender.com/docs`
+- Health: `https://intent-scoring-api.onrender.com/health`
+- Loom demo link: <ADD HERE>
 
-CMD ["python", "main.py"]
+#### Live cURL quickstart
+```bash
+curl -s https://intent-scoring-api.onrender.com/health
+curl -s https://intent-scoring-api.onrender.com/docs
+
+# Offer
+curl -X POST https://intent-scoring-api.onrender.com/offer -H "Content-Type: application/json" -d @offer.json
+
+# Leads (uses the sample CSV in repo)
+curl -X POST https://intent-scoring-api.onrender.com/leads/upload -F "file=@leads.csv"
+
+# Score
+curl -X POST https://intent-scoring-api.onrender.com/score
+
+# Results (JSON)
+curl -s https://intent-scoring-api.onrender.com/results | jq .
+
+# Results (CSV)
+curl -L https://intent-scoring-api.onrender.com/results/csv -o scored_leads.csv
 ```
 
 ## Testing
@@ -239,7 +262,6 @@ intent_scoring_api/
 - **FastAPI**: Modern, fast web framework for building APIs
 - **Pydantic**: Data validation and settings management
 - **Google Generative AI**: Gemini AI integration for intent classification
-- **Pandas**: CSV processing and data manipulation
 - **Uvicorn**: ASGI server for running the application
 
 ## Contributing

@@ -1,3 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.coverage
+
+# Environments
+.venv/
+venv/
+.python-version
+
+# OS/Editor
+.DS_Store
+.idea/
+.vscode/
+
+# Env files
+.env
+*.env
+
+# Build/Dist
+build/
+dist/
+
+# Logs and temp
+*.log
+tmp/
+
+# Docker
+.dockerignore
+
+# Generated data
+scored_leads.csv
 __pycache__/
 *.py[cod]
 *.pyo

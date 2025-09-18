@@ -10,6 +10,7 @@ import csv
 import io
 from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 import requests
@@ -28,6 +29,15 @@ app = FastAPI(
     title="Lead Qualification API",
     description="Backend service for scoring leads based on product/offer context",
     version="1.0.0"
+)
+
+# Enable CORS (allow all origins by default; tighten for production as needed)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Configure Gemini AI (REST)
@@ -368,4 +378,5 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.getenv("PORT", "8000"))
+    uvicorn.run(app, host="0.0.0.0", port=port)
